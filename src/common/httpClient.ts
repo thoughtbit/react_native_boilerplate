@@ -4,7 +4,17 @@
 
 import { serializeParams, generateRequestUrlWithParams, assertLongQuery } from './utils';
 
+interface RequestConfig {
+  cache?: string;
+  headers?: any;
+  method?: string;
+  data?: any;
+  body?: any;
+  timeout?: number;
+}
+
 class HttpClient {
+  interceptors: any
   /**
    * Create a new instance of HttpClient.
    */
@@ -18,13 +28,12 @@ class HttpClient {
   /**
    * Sends a single request to server.
    */
-  async sendRequest(url: string, options = {}) {
+  async request(url: string, options: RequestConfig) {
     // 判断Query String 参数值是否太大
     assertLongQuery(url);
 
     const defaultOptions = {
-      timeout: 20 * 1000,
-      credentials: 'include', // 是否可以将对请求的响应暴露给页面, Credentials可以是 cookies, authorization headers 或 TLS client certificates.
+      timeout: 30 * 1000
     };
 
     const defaultHeaders = {
@@ -32,78 +41,60 @@ class HttpClient {
       'Content-Type': 'application/json; charset=utf-8',
     };
 
+    const { method } = options;
     let requestUrl = url;
     let data = options.data || {};
-    let requestOptions = { ...defaultOptions, ...options };
+    let headers = options.headers || {};
+    let requestOptions = {
+      ...defaultOptions, 
+      ...options,
+      method: method ? method.toUpperCase() : 'GET'
+    };
 
-    if (!requestOptions.headers) {
-      requestOptions.headers = {};
-    }
+    // 设置默认 Accept 和 Content-Type
+    requestOptions.headers = Object.assign(defaultHeaders, headers);
+    // 设置默认 Cache
+    requestOptions.cache = options.cache || 'default';
 
-    // 重新设置 Accept 和 Content-Type
-    requestOptions.headers = Object.assign(defaultHeaders, requestOptions.headers);
-
-    let method = requestOptions.method || 'GET';
-    method = method.toUpperCase();
-
-    // 根据请求类型处理数据
-    let contentType = 'json';
-    for (const key in requestOptions.headers) {
-      if (requestOptions.headers.hasOwnProperty(key)) {
-        if (key.toLowerCase() === 'content-type') {
-          contentType = requestOptions.headers[key];
-          if (contentType.indexOf('application/json') === 0) {
-            contentType = 'json';
-          } else if (contentType.indexOf('application/x-www-form-urlencoded') === 0) {
-            contentType = 'urlencoded';
-          } else {
-            contentType = 'string';
-          }
-          break;
-        }
-      }
-    }
-
-    if (method === 'GET') {
+    if (method === 'GET' || method === 'HEAD') {
       requestUrl = generateRequestUrlWithParams(url, data);
-    } else {
-      if (contentType === 'json') {
+    } else if(typeof data === 'object') {
+      // 根据请求类型处理数据
+      let contentType = requestOptions.headers && (requestOptions.headers['Content-Type'] || requestOptions.headers['content-type'])
+      if (contentType && contentType.indexOf('application/json') >= 0) {
         try {
-          data = JSON.stringify(data);
+          requestOptions.body = JSON.stringify(data);
         } catch (error) {
-          data = data.toString();
+          requestOptions.body = data.toString();
         }
-      } else if (contentType === 'urlencoded') {
-        data = serializeParams(data);
+      } else if (contentType && contentType.indexOf('application/x-www-form-urlencoded') >= 0) {
+        requestOptions.body = serializeParams(data)
       } else {
-        data = data.toString();
+        requestOptions.body = data.toString();
       }
+    } else {
+      requestOptions.body = data.toString();
     }
 
-    if (method !== 'GET' && method !== 'HEAD') {
-      requestOptions.body = data;
-    }
-
-    this.interceptors.request.forEach(interceptor => {
+    this.interceptors.request.forEach((interceptor: (url: string, req: any) => any) => {
       const request = interceptor(requestUrl, requestOptions);
       requestUrl = request.url;
       requestOptions = request.options;
     });
 
     const fetchPromise = new Promise((resolve, reject) => {
-      requestOptions.requestId = new Date().getTime();
       fetch(url, requestOptions)
-        .then((res) => {
+        .then((res: Response) => {
           resolve(res);
         })
-        .catch((e) => {
+        .catch((e: Error): void => {
           reject(e);
         });
     });
 
     let response = this.timeoutPromise(fetchPromise, requestOptions.timeout);
 
-    this.interceptors.response.forEach(interceptor => {
+    this.interceptors.response.forEach((interceptor: (res: any) => any) => {
       response = interceptor(response);
     });
 
@@ -116,8 +107,8 @@ class HttpClient {
    * @param timeout
    * @returns {Promise<any>}
    */
-  timeoutPromise(fetchPromise, timeout) {
-    let abortFn = null;
+  timeoutPromise(fetchPromise: Promise<any>, timeout: number | undefined) {
+    let abortFn: any = null;
 
     // 这是一个可以被reject的promise
     const abortPromise = new Promise((resolve, reject) => {
@@ -134,6 +125,31 @@ class HttpClient {
     }, timeout);
 
     return racePromise;
+  }
+
+  async delete (url: string, config = {}) {
+    return await this.request(url, Object.assign(config, { method: 'DELETE' }))
+  }
+  async get (url: string, config = {}) {
+    return await this.request(url, Object.assign(config, { method: 'GET' }))
+  }
+  async head (url: string, config = {}) {
+    return await this.request(url, Object.assign(config, { method: 'HEAD' }))
+  }
+  async options (url: string, config = {}) {
+    return await this.request(url, Object.assign(config, { method: 'OPTIONS' }))
+  }
+  async post (url: string, data: any, config = {}) {
+    return await this.request(url, Object.assign(config, { method: 'POST', data }))
+  }
+  async put (url: string, data: any, config = {}) {
+    return await this.request(url, Object.assign(config, { method: 'PUT', data }))
+  }
+  async patch (url: string, data: any, config = {}) {
+    return await this.request(url, Object.assign(config, { method: 'PATCH', data }))
+  }
+  async upload(url: string, data: any, config = {}) {
+    return await this.request(url, Object.assign(config, { method: 'POST', headers: { 'Content-Type': 'multipart/form-data' }, data }))
   }
 }
 
